@@ -1,0 +1,15 @@
+# Copy to backend.hcl (gitignored). Fill in from ../bootstrap's outputs:
+#   terraform -chdir=../bootstrap output -raw resource_group_name
+#   terraform -chdir=../bootstrap output -raw storage_account_name
+#   terraform -chdir=../bootstrap output -raw container_name
+#
+# Then initialize this layer with:
+#   terraform init -backend-config=backend.hcl
+#
+# The storage account key is NOT put in this file - supply it via the
+# ARM_ACCESS_KEY environment variable instead (see ../../README.md).
+
+resource_group_name  = "rg-petclinic-poc-tfstate"
+storage_account_name = "<from bootstrap output: storage_account_name>"
+container_name        = "tfstate"
+key                   = "devsecops-poc.tfstate"

@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars (gitignored). No secrets belong in this file.
+
+project  = "petclinic-poc"
+location = "centralindia"
+
+tfstate_storage_account_name = "<from bootstrap output: storage_account_name>"

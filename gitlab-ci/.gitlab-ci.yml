@@ -1,0 +1,264 @@
+# NOTE (portfolio copy): ACR_LOGIN_SERVER below is a PLACEHOLDER
+# (<your-acr-name>.azurecr.io). The real pipeline references a live,
+# project-specific ACR hostname, which has been redacted here - see
+# docs/production-readiness.md and SECURITY-CHECKLIST.md.
+
+stages:
+  - build
+  - test
+  - container-build
+
+include:
+  # GitLab's maintained SAST scanning template. Job(s) it defines depend on
+  # auto-detected languages and your plan tier (e.g. gitlab-advanced-sast
+  # and/or semgrep-sast for a Java repo); job names are not hardcoded here
+  # so this stays correct regardless of which analyzer(s) actually run.
+  - template: Jobs/SAST.gitlab-ci.yml
+  # GitLab's maintained SBOM-based Dependency Scanning template
+  # (current replacement for the deprecated Gemnasium-based template).
+  # Auto-detects pom.xml across this multi-module Maven project; resolves
+  # the dependency graph via a .pre-stage helper job, then scans it in the
+  # test stage. No compiled build/artifacts required, and no job-level
+  # tags are set by the template, so it inherits the default.tags below.
+  - template: Jobs/Dependency-Scanning.v2.gitlab-ci.yml
+  # GitLab's maintained Secret Detection template. Scans only new/
+  # incremental commits by default (GIT_DEPTH=50) - historic full-history
+  # scanning is deliberately NOT enabled here; that would be a separate,
+  # explicitly-approved one-off task. No job-level tags are set by the
+  # template, so it inherits the default.tags below.
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
+variables:
+  # Redirects Maven's local repository into the project directory so the
+  # `cache` block below (paths are relative to CI_PROJECT_DIR) actually
+  # persists it between pipeline runs. Without this, the wrapper would use
+  # the default ~/.m2/repository outside the cached path.
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+
+# Applies to every job that doesn't set its own `tags:` - GitLab's
+# documented pattern for routing included-template jobs (SAST, etc.) to a
+# specific self-hosted runner without needing to know/override each job
+# by name. The `build` job below sets its own tags, so this doesn't
+# change it.
+default:
+  tags:
+    - azure-ci-vm-docker
+
+build:
+  stage: build
+  tags:
+    - azure-ci-vm-docker
+  image: eclipse-temurin:17-jdk
+  script:
+    - ./mvnw -B -ntp clean verify
+  artifacts:
+    when: always
+    paths:
+      - "*/target/surefire-reports/"
+      - "*/target/*.jar"
+      - "*/target/classes/"
+      - "*/target/test-classes/"
+    reports:
+      junit: "*/target/surefire-reports/TEST-*.xml"
+    expire_in: 1 week
+  cache:
+    key: maven-$CI_COMMIT_REF_SLUG
+    paths:
+      - .m2/repository
+
+# SonarQube analysis - deliberately a SEPARATE job, not folded into
+# `build`. Runs `sonar:sonar` from the Maven reactor root using `build`'s
+# already-compiled classes (target/classes, target/test-classes -
+# restored via artifacts, no meaningful transfer cost). This keeps
+# `build`'s own script and pass/fail meaning unchanged, and means a
+# SonarQube outage can never block `build` or `container-build` - only
+# this job. SONAR_HOST_URL points at the runner host's own Docker bridge
+# gateway - SonarQube itself is never exposed publicly. SONAR_TOKEN is a
+# masked+protected GitLab CI/CD variable, never present in this file.
+# sonar.qualitygate.wait=true makes this job fail if the Quality Gate
+# fails - intentionally not marked allow_failure.
+sonarqube:
+  stage: test
+  tags:
+    - azure-ci-vm-docker
+  image: eclipse-temurin:17-jdk
+  needs:
+    - job: build
+      artifacts: true
+  variables:
+    SONAR_HOST_URL: "http://172.17.0.1:9000" # Docker bridge gateway on the self-hosted runner host
+  script:
+    - ./mvnw -B -ntp org.sonarsource.scanner.maven:sonar-maven-plugin:5.1.0.4751:sonar -Dsonar.host.url=$SONAR_HOST_URL -Dsonar.token=$SONAR_TOKEN -Dsonar.qualitygate.wait=true
+  cache:
+    key: maven-$CI_COMMIT_REF_SLUG
+    paths:
+      - .m2/repository
+
+# Builds and pushes all 8 service images via Buildah (rootless, VFS
+# storage driver) instead of Docker-in-Docker or socket-binding - needs
+# no `privileged: true` runner config. One matrix instance per service,
+# reusing the same build/push logic instead of duplicating it 8 times.
+container-build:
+  stage: container-build
+  tags:
+    - azure-ci-vm-container-build
+  image: quay.io/buildah/stable:v1.43.4
+  needs:
+    - job: build
+      artifacts: true
+  parallel:
+    matrix:
+      - SERVICE: vets-service
+        ARTIFACT_NAME: spring-petclinic-vets-service-4.0.1
+        EXPOSED_PORT: "8083"
+      - SERVICE: config-server
+        ARTIFACT_NAME: spring-petclinic-config-server-4.0.1
+        EXPOSED_PORT: "8888"
+      - SERVICE: discovery-server
+        ARTIFACT_NAME: spring-petclinic-discovery-server-4.0.1
+        EXPOSED_PORT: "8761"
+      - SERVICE: customers-service
+        ARTIFACT_NAME: spring-petclinic-customers-service-4.0.1
+        EXPOSED_PORT: "8081"
+      - SERVICE: visits-service
+        ARTIFACT_NAME: spring-petclinic-visits-service-4.0.1
+        EXPOSED_PORT: "8082"
+      - SERVICE: genai-service
+        ARTIFACT_NAME: spring-petclinic-genai-service-4.0.1
+        EXPOSED_PORT: "8084"
+      - SERVICE: api-gateway
+        ARTIFACT_NAME: spring-petclinic-api-gateway-4.0.1
+        EXPOSED_PORT: "8080"
+      - SERVICE: admin-server
+        ARTIFACT_NAME: spring-petclinic-admin-server-4.0.1
+        EXPOSED_PORT: "9090"
+  variables:
+    STORAGE_DRIVER: vfs
+    BUILDAH_FORMAT: docker
+    ACR_LOGIN_SERVER: "<your-acr-name>.azurecr.io" # placeholder - see note at top of file
+    IMAGE_NAME: "$ACR_LOGIN_SERVER/spring-petclinic-$SERVICE"
+  before_script:
+    # Authenticates to ACR using the CI host's system-assigned managed
+    # identity via Azure IMDS - no static ACR credential, no
+    # imagePullSecret, no long-lived service-principal secret. Both
+    # tokens are short-lived, held only in shell variables for this job's
+    # ephemeral container, never printed or written to a file.
+    - |
+        IMDS_URL="http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fcontainerregistry.azure.net"
+        AAD_TOKEN=$(curl -s -m 10 -H "Metadata:true" "$IMDS_URL" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+        if [ -z "$AAD_TOKEN" ]; then
+          echo "ERROR: failed to obtain an Azure AD access token from IMDS"
+          exit 1
+        fi
+        EXCHANGE_URL="https://${ACR_LOGIN_SERVER}/oauth2/exchange"
+        ACR_REFRESH_TOKEN=$(curl -s -X POST "$EXCHANGE_URL" -d "grant_type=access_token" -d "service=${ACR_LOGIN_SERVER}" --data-urlencode "access_token=${AAD_TOKEN}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('refresh_token',''))" 2>/dev/null)
+        if [ -z "$ACR_REFRESH_TOKEN" ]; then
+          echo "ERROR: failed to exchange the Azure AD token for an ACR refresh token"
+          exit 1
+        fi
+        echo "$ACR_REFRESH_TOKEN" | buildah login "$ACR_LOGIN_SERVER" -u 00000000-0000-0000-0000-000000000000 --password-stdin
+  script:
+    - buildah build
+        --storage-driver=vfs
+        -f docker/Dockerfile
+        --build-arg ARTIFACT_NAME=$ARTIFACT_NAME
+        --build-arg EXPOSED_PORT=$EXPOSED_PORT
+        -t "$IMAGE_NAME:$CI_COMMIT_SHA"
+        spring-petclinic-$SERVICE/target
+    - buildah push --digestfile=image-digest.txt "$IMAGE_NAME:$CI_COMMIT_SHA"
+    - echo "IMAGE_DIGEST=$(cat image-digest.txt)" > build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+
+# Trivy image scan - non-blocking (allow_failure: true, no --exit-code
+# gating on severity). Scans the EXACT immutable image just pushed by
+# container-build (same $CI_COMMIT_SHA tag), by its exact digest, not a
+# rebuilt or different image. Generates and retains a full vulnerability
+# report (GitLab's native container_scanning report format, all
+# severities, no suppression/ignore-list) - findings are visible, just
+# not pipeline-blocking for this POC. See docs/devsecops-controls.md for
+# why this is a deliberate POC simplification, not a recommended
+# production posture.
+trivy-scan:
+  stage: container-build
+  tags:
+    - azure-ci-vm-container-build
+  image:
+    name: aquasec/trivy:0.74.0
+    entrypoint: [""]
+  # needs:parallel:matrix (GitLab 18.6+) with matrix expressions creates
+  # the 1:1 dependency between matrix instances - identical parallel:
+  # matrix blocks on both jobs alone do NOT establish per-instance
+  # pairing. Each trivy-scan instance resolves $[[ matrix.SERVICE ]] etc.
+  # to its OWN matrix values at pipeline-creation time, selecting the
+  # single container-build instance with those same values.
+  needs:
+    - job: container-build
+      artifacts: true
+      parallel:
+        matrix:
+          - SERVICE: ['$[[ matrix.SERVICE ]]']
+            ARTIFACT_NAME: ['$[[ matrix.ARTIFACT_NAME ]]']
+            EXPOSED_PORT: ['$[[ matrix.EXPOSED_PORT ]]']
+  allow_failure: true
+  # Must match container-build's matrix exactly so needs resolves each
+  # trivy-scan instance to its corresponding build instance.
+  parallel:
+    matrix:
+      - SERVICE: vets-service
+        ARTIFACT_NAME: spring-petclinic-vets-service-4.0.1
+        EXPOSED_PORT: "8083"
+      - SERVICE: config-server
+        ARTIFACT_NAME: spring-petclinic-config-server-4.0.1
+        EXPOSED_PORT: "8888"
+      - SERVICE: discovery-server
+        ARTIFACT_NAME: spring-petclinic-discovery-server-4.0.1
+        EXPOSED_PORT: "8761"
+      - SERVICE: customers-service
+        ARTIFACT_NAME: spring-petclinic-customers-service-4.0.1
+        EXPOSED_PORT: "8081"
+      - SERVICE: visits-service
+        ARTIFACT_NAME: spring-petclinic-visits-service-4.0.1
+        EXPOSED_PORT: "8082"
+      - SERVICE: genai-service
+        ARTIFACT_NAME: spring-petclinic-genai-service-4.0.1
+        EXPOSED_PORT: "8084"
+      - SERVICE: api-gateway
+        ARTIFACT_NAME: spring-petclinic-api-gateway-4.0.1
+        EXPOSED_PORT: "8080"
+      - SERVICE: admin-server
+        ARTIFACT_NAME: spring-petclinic-admin-server-4.0.1
+        EXPOSED_PORT: "9090"
+  variables:
+    ACR_LOGIN_SERVER: "<your-acr-name>.azurecr.io" # placeholder - see note at top of file
+    IMAGE_NAME: "$ACR_LOGIN_SERVER/spring-petclinic-$SERVICE"
+  script:
+    - |
+        IMDS_URL="http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fcontainerregistry.azure.net"
+        AAD_TOKEN=$(wget -q -O - --header="Metadata:true" "$IMDS_URL" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+        if [ -z "$AAD_TOKEN" ]; then
+          echo "ERROR: failed to obtain an Azure AD access token from IMDS"
+          exit 1
+        fi
+        EXCHANGE_URL="https://${ACR_LOGIN_SERVER}/oauth2/exchange"
+        ACR_REFRESH_TOKEN=$(wget -q -O - --post-data="grant_type=access_token&service=${ACR_LOGIN_SERVER}&access_token=${AAD_TOKEN}" "$EXCHANGE_URL" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
+        if [ -z "$ACR_REFRESH_TOKEN" ]; then
+          echo "ERROR: failed to exchange the Azure AD token for an ACR refresh token"
+          exit 1
+        fi
+        export TRIVY_USERNAME="00000000-0000-0000-0000-000000000000"
+        export TRIVY_PASSWORD="$ACR_REFRESH_TOKEN"
+        if [ -z "$IMAGE_DIGEST" ]; then
+          echo "ERROR: IMAGE_DIGEST not set - container-build's dotenv artifact was not inherited"
+          exit 1
+        fi
+        trivy image --format template --template "@/contrib/gitlab.tpl" -o gl-container-scanning-report.json "$IMAGE_NAME@$IMAGE_DIGEST"
+        trivy image --format table "$IMAGE_NAME@$IMAGE_DIGEST"
+  artifacts:
+    when: always
+    reports:
+      container_scanning: gl-container-scanning-report.json
+    paths:
+      - gl-container-scanning-report.json
+    expire_in: 1 week

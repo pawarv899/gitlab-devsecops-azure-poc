@@ -1,0 +1,12 @@
+apiVersion: v2
+name: spring-petclinic
+description: >-
+  Spring PetClinic - TEST AKS Helm chart. Scope is deliberately locked to
+  3 services for this POC: config-server, discovery-server, vets-service
+  - enough to demonstrate the full dependency chain (centralized config,
+  service discovery, a real business service) without the cost/
+  complexity of running all 8 upstream services on a single-node test
+  cluster. See docs/production-readiness.md.
+type: application
+version: 0.1.0
+appVersion: "4.0.1"

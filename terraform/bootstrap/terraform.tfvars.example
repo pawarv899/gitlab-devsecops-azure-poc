@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored) and adjust for your own subscription.
+# No secrets belong in this file.
+
+project                   = "petclinic-poc"
+location                  = "centralindia" # confirm quota/availability in your subscription first
+state_resource_group_name = "rg-petclinic-poc-tfstate"
+state_container_name      = "tfstate"

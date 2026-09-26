@@ -1,0 +1,31 @@
+# Argo CD Application for the 3-service vertical slice. Requires:
+#  1. Argo CD itself installed in-cluster (non-HA, see docs/architecture.md).
+#  2. A repository credential registered in Argo CD for the (private)
+#     GitLab repo - a read-only, project-scoped Deploy Key (SSH) or
+#     Deploy Token (HTTPS), never a personal access token, never handled
+#     by any automation - created and applied by a human directly,
+#     outside of any tool/AI session. See SECURITY-CHECKLIST.md.
+#
+# Sync policy is deliberately MANUAL (no `automated:` block) - applying
+# this Application registers it with Argo CD but does not deploy
+# anything until a Sync is explicitly triggered, giving a checkpoint
+# before any pod is created. See docs/production-readiness.md for the
+# tradeoffs of manual vs automated sync at production scale.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: spring-petclinic-test
+  namespace: argocd
+spec:
+  project: default
+  source:
+    # PLACEHOLDER - replace with your own GitLab/GitHub repository URL.
+    repoURL: git@gitlab.com:<your-namespace>/<your-repo>.git
+    targetRevision: main
+    path: helm/spring-petclinic
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: petclinic-test
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,76 @@
+# --- Terraform ---
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Variable files may contain environment-specific or sensitive values.
+# Keep example/template files tracked.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!*.tfvars.json.example
+
+# Partial backend config is environment-specific; keep the example tracked.
+**/backend.hcl
+!**/backend.hcl.example
+
+.terraformrc
+terraform.rc
+
+# --- Azure / cloud CLI ---
+.azure/
+*.publishsettings
+
+# --- Kubernetes ---
+kubeconfig
+*.kubeconfig
+.kube/
+
+# --- Credentials / secrets (defense in depth) ---
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+id_rsa*
+id_ed25519*
+*.ppk
+.env
+.env.*
+!*.env.example
+*credentials*
+!*credentials*.example
+
+# --- Java / Maven ---
+target/
+*.class
+*.jar
+!*/*.example.jar
+.mvn/wrapper/maven-wrapper.jar
+*.iml
+.classpath
+.project
+.settings/
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Helm ---
+*.tgz
+Chart.lock
+
+# --- Local scratch ---
+/tmp/
+*.local.yaml

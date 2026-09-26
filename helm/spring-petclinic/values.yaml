@@ -1,0 +1,83 @@
+# Namespace all resources from this chart are deployed into. Created by
+# Argo CD (syncOptions: CreateNamespace=true), not by this chart - keeps
+# namespace lifecycle owned by the GitOps Application, not the chart.
+namespace: petclinic-test
+
+image:
+  # PLACEHOLDER - the real chart points at a live, project-specific ACR
+  # login server, redacted for this public copy. Replace with your own
+  # registry's login server.
+  registry: <your-acr-name>.azurecr.io
+  # Immutable $CI_COMMIT_SHA tag - built, pushed and Trivy-scanned for
+  # all 8 services by the CI pipeline. Never "latest". Bump this single
+  # value to promote a newer commit's images - no other file changes
+  # needed. The value below is illustrative only (a real commit SHA from
+  # this project's own testing) - replace with your own pipeline's tag.
+  tag: "869db76526719de0f2f70762fd156e1645b0af6d"
+
+# SCOPE DECISION (locked for this POC): only these 3 services are
+# deployed - config-server, discovery-server, vets-service. This is not
+# a "first phase" of an eventual 8-service rollout; customers-service,
+# visits-service, genai-service, api-gateway and admin-server are
+# deliberately absent from this file, not merely disabled - see
+# docs/production-readiness.md for the resource-budget reasoning.
+#
+# The chart's Deployment/Service templates remain generic (loop over
+# .Values.services, gated by `enabled`) so the mechanism is reusable if
+# that decision is ever revisited.
+#
+# healthPath is /actuator/health for every service - Spring Boot
+# Actuator is a confirmed dependency of every module. Probes
+# deliberately use the single unified /actuator/health endpoint for
+# startup, readiness and liveness rather than assuming Kubernetes-
+# specific health GROUPS exist (management.endpoint.health.probes.enabled
+# was not confirmed present in every module).
+#
+# env.CONFIG_SERVER_URL points at this chart's own config-server Service
+# name (ClusterIP, same namespace) - overrides each module's own
+# `${CONFIG_SERVER_URL:http://localhost:8888/}` default. Eureka discovery
+# needs no override: the application's own externalized config hardcodes
+# `http://discovery-server:8761/eureka/`, which resolves correctly only
+# because the Service is named exactly `discovery-server` - see
+# templates/service.yaml.
+services:
+  config-server:
+    enabled: true
+    port: 8888
+    healthPath: /actuator/health
+    env: {}
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  discovery-server:
+    enabled: true
+    port: 8761
+    healthPath: /actuator/health
+    env:
+      CONFIG_SERVER_URL: "http://config-server:8888"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  vets-service:
+    enabled: true
+    port: 8083
+    healthPath: /actuator/health
+    env:
+      CONFIG_SERVER_URL: "http://config-server:8888"
+    resources:
+      requests:
+        cpu: 150m
+        memory: 384Mi
+      limits:
+        cpu: 750m
+        memory: 768Mi
